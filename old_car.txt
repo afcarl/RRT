@@ -1,0 +1,503 @@
+/*
+float getHeuristicCarDistance(xy_type target_pos, xyt_type current_pos);
+//void checkPassComparison(float vec_1[],float vec_2[]);
+
+
+struct Link
+{
+    int node_id_to;
+    double turning_radius;
+    bool forward;
+    double inc_distance; // distance travelled
+    std::vector< xyt_type> path; // vector of (x,y,theta) coordinates
+};
+
+struct Node
+{
+    xyt_type position;      // {x,y,theta} theta is always a positive number from 0 to 2pi
+    int node_id;            // starting at 0
+    double tot_distance;     // total distance from starting position along the path
+};
+
+class Environment{
+public:
+    Environment() {
+        initialize();
+    }
+    
+    void initialize() {
+        xy_type lower_left = {0.0,0.0};
+        xy_type upper_right = {10.0,10.0};
+        m_bounds[0] = lower_left;
+        m_bounds[1] = upper_right;
+    }
+    
+    void addObstacle(xy_type& point1, xy_type& point2, xy_type& point3) {
+    }
+    
+    void getLowerLeftBound(xy_type& lower_left) {
+        lower_left[0] = m_bounds[0][0];
+        lower_left[1] = m_bounds[0][1];
+    }
+    
+    void getUpperRightBound(xy_type& upper_right) {
+        upper_right[0] = m_bounds[1][0];
+        upper_right[1] = m_bounds[1][1];
+    }
+    
+    //    float * getObstacles(float &ptr_array) {
+    //        int num_obstacles = static_cast<int>(m_obstacles.size());
+    //        float ** obstacles_copy;
+    //        for (int obs = 0; obs < num_obstacles; obs++) {
+    //            float lower_left_x = m_obstacles[obs][0][0];
+    //            float lower_left_y = m_obstacles[obs][0][1];
+    //            float upper_right_x = m_obstacles[obs][1][0];
+    //            float upper_right_y = m_obstacles[obs][1][1];
+    //            float lower_left[] {lower_left_x,lower_left_y};
+    //            float upper_right[] {upper_right_x,upper_right_y};
+    //            float *new_obstacle[] {lower_left,upper_right};
+    //            *(ptr_obstacles_copy+obs) = new_obstacle;
+    //        }
+    //        return ptr_obstacles_copy;
+    //    }
+    
+    bool withinBounds(float pos[3]) {
+        float x = pos[0];
+        float y = pos[1];
+        if (x > m_bounds[0][0] and x < m_bounds[1][0] and y > m_bounds[0][1] and y < m_bounds[1][1]) {
+            // x,y inside the box
+            return true;
+        }
+        return false;
+    }
+    
+    bool freeOfConstraints(xy_type& pos) {
+        return true;
+    }
+    
+private:
+    boost::array< xy_type,2 > m_bounds; //bounds[0] is x,y coord of bottom left, bounds[1] is x,y coord of top right
+    std::vector< std::vector< std::vector<float> > > m_obstacles; // vector that contains bounds for rectangular obstacles in the environment
+    
+};
+
+class Tree{
+public:
+    Tree(float start_position[3]) {
+        initialize(start_position);
+    }
+    
+    void initialize(float *ptr_start_position) {
+        std::cout << "tree initialization beginning..." << "\n";
+        // node angle is on range from -PI to PI
+        Node start_node {{*ptr_start_position,*(ptr_start_position+1),*(ptr_start_position+2)},0,0.0};
+        m_nodes_list.push_back(start_node);
+        std::vector<Link> empty_link_list;
+        m_links_list.push_back(empty_link_list);
+        m_delta_q = 0.5;
+        m_min_turning_radius = 0.5;
+        m_distance_to_goal_tolerance = 0.1;
+        m_goal_position[0] = 11.0;
+        m_goal_position[1] = 11.0;
+        m_goal_position[2] = 0.0;
+    }
+    
+    float * getNodePosition(int node_id) {
+        float node_pos[3];
+        float *ptr_node_pos = node_pos;
+        *ptr_node_pos = m_nodes_list[node_id].position[0];
+        *(ptr_node_pos+1) = m_nodes_list[node_id].position[1];
+        *(ptr_node_pos+2) = m_nodes_list[node_id].position[2];
+        return ptr_node_pos;
+    }
+    
+    void addBranch(xyt_type position,int parent_node_id,float turning_radius, bool forward, float distance, std::vector< xyt_type >& path) {
+        // add node and connection coming from parent node
+        int num_nodes = static_cast<int>(m_nodes_list.size());
+        float parent_distance = m_nodes_list[parent_node_id].tot_distance;
+        Node new_node {{position[0],position[1],position[2]},num_nodes,parent_distance+distance};
+        m_nodes_list.push_back(new_node);
+        Link new_link {num_nodes,turning_radius,forward,distance,path};
+        std::vector<Link> new_link_list;
+        m_links_list.push_back(new_link_list);
+        m_links_list[parent_node_id].push_back(new_link);
+    }
+    
+    int findNearestNodeID(xy_type target_position) {
+        // searches through all nodes in tree to find closest to target position, returns node id of nearest node
+        float shortest_distance = 100000; // arbitrarily large to start
+        int closest_node_id = 0;
+        int num_nodes = static_cast<int> (m_nodes_list.size());
+        for (int i=0; i < num_nodes; i++) {
+            xyt_type node_pos {m_nodes_list[i].position[0],m_nodes_list[i].position[1],m_nodes_list[i].position[2]};
+            double d = getHeuristicCarDistance(target_position, node_pos);
+            if (d <= shortest_distance) {
+                shortest_distance = d;
+                closest_node_id = i;
+            }
+        };
+        return closest_node_id;
+    }
+    
+    int extend(xy_type rand_position,int nearest_node_id=-1) {
+        // return 0 (Trapped), 1 (Advanced), 2 (Reached)
+        if (nearest_node_id < 0) {
+            nearest_node_id = findNearestNodeID(rand_position);
+        }
+        xyt_type q_new;
+        int num_nodes_before = static_cast<int>(m_nodes_list.size());
+        addNewConfig(rand_position,nearest_node_id,q_new);
+        if (num_nodes_before < m_nodes_list.size()) { // the tree was extended
+            xy_type q_new_xy = {q_new[0],q_new[1]};
+            xy_type goal_pos_xy = {m_goal_position[0],m_goal_position[1]};
+            double dist_to_goal = getEuclideanDistance(q_new_xy, goal_pos_xy);
+            if (dist_to_goal < m_distance_to_goal_tolerance) { // new node is near target
+                return 2; // Reached
+            } else {
+                return 1; // Advanced
+            }
+        }
+        return 0;
+    }
+    
+    int connect(xy_type rand_position) {
+        // return 0 (Trapped), 1 (Extended), 2 (Reached)
+        int S = extend(rand_position);
+        double delta_dist = 1.0;
+        while (S == 1 and delta_dist > m_delta_q/2.0) {
+            int last_node_id = static_cast<int>(m_nodes_list.size())-1;
+            xy_type two_ago = {m_nodes_list[last_node_id-2].position[0],m_nodes_list[last_node_id-2].position[1]};
+            double dist_pre = getEuclideanDistance(two_ago, rand_position);
+            xy_type one_ago = {m_nodes_list[last_node_id-1].position[0],m_nodes_list[last_node_id-1].position[1]};
+            double dist_post = getEuclideanDistance(one_ago, rand_position);
+            delta_dist = dist_pre-dist_post;
+            S = extend(rand_position,last_node_id);
+        }
+        return S;
+    }
+    
+    void rand_config(xy_type& q_rand) {
+        //perhaps this could be moved so it doesnt happen everytime
+        std::random_device rd;  //Will be used to obtain a seed for the random number engine
+        std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
+        std::uniform_real_distribution<float> dis(0.0, 1.0);
+        
+        xy_type lower_left;
+        m_environment.getLowerLeftBound(lower_left);
+        xy_type upper_right;
+        m_environment.getUpperRightBound(upper_right);
+        
+        bool acceptable_config_found = false;
+        while (not acceptable_config_found) {
+            q_rand[0] = lower_left[0] + dis(gen)*(upper_right[0] - lower_left[0]);
+            q_rand[1] = lower_left[1] + dis(gen) * (upper_right[1] - lower_left[1]);
+            if (m_environment.freeOfConstraints(q_rand)) {
+                acceptable_config_found = true;
+            }
+        };
+    }
+    
+    void addNewConfig(xy_type q_rand, int nearest_node_id, xyt_type q_new)  {
+        double near_x = m_nodes_list[nearest_node_id].position[0];
+        double near_y = m_nodes_list[nearest_node_id].position[1];
+        double near_theta = m_nodes_list[nearest_node_id].position[2];
+        xy_type q_near_xy = {near_x,near_y};
+        
+        double rand_x = q_rand[0];
+        double rand_y = q_rand[1];
+        
+        float dist_near_to_rand = getEuclideanDistance(q_rand, q_near_xy);
+        if (dist_near_to_rand < 0.01) {
+            q_new[0] = near_x;
+            q_new[1] = near_y;
+            q_new[2] = near_theta;
+            return;
+        }
+        xy_type vec_near_to_rand {rand_x-near_x,rand_y-near_y};
+        
+        double angle_vec_near_to_rand = getAngleFromVector(vec_near_to_rand);
+        double angle_between = angle_vec_near_to_rand - near_theta;  // range from -pi to pi
+        if (angle_between > M_PI) {                                 // enforce the domain range
+            angle_between -= 2*M_PI;
+        }
+        
+        // determine which way the car should turn
+        bool leftTurning = true;
+        if (angle_between < 0) {
+            leftTurning = false;
+            angle_between = abs(angle_between);
+        }
+        float turning_radius;
+        bool forward;
+        float max_angle_to_progress;
+        // get turning radius
+        if (angle_between <= M_PI_2) {              // forward
+            forward = true;                         // this is used below in the turning left conditional with a rotateVector call
+            if (angle_between <= M_PI_4) {
+                float alpha = M_PI_2 - angle_between;
+                float complement = std::max(M_PI - 2*alpha,0.000001);
+                turning_radius = dist_near_to_rand*sin(alpha)/sin(complement);
+                max_angle_to_progress = complement;
+            } else {
+                xy_type node_angle_vector = {cos(near_theta),sin(near_theta)};
+                turning_radius = getVectorProjection(vec_near_to_rand, node_angle_vector);
+                max_angle_to_progress = M_PI_2;
+            }
+        } else {                                    // backwards
+            forward = false;
+            if (angle_between >= 3*M_PI_4) {         // calculate turning radius
+                float alpha = angle_between - M_PI_2;
+                float complement = std::max(M_PI - 2*alpha,0.000001);
+                turning_radius = dist_near_to_rand*sin(alpha)/sin(complement);
+                max_angle_to_progress = complement;
+            } else {                                // turning radius is minimum turning radius
+                xy_type node_angle_vector = {cos(near_theta),sin(near_theta)};
+                turning_radius = getVectorProjection(vec_near_to_rand, node_angle_vector);
+                max_angle_to_progress = M_PI_2;
+            }
+        }
+        turning_radius = std::max(turning_radius,m_min_turning_radius);
+        
+        float rotation = M_PI_2;
+        if (leftTurning == false) {
+            rotation *= -1.0;
+        }
+        //C is the center of rotation
+        xy_type vec_to_C = {turning_radius*cos(near_theta+rotation),turning_radius*sin(near_theta+rotation)};
+        // position of center of rotation C
+        xy_type pos_C = {vec_to_C[0]+near_x,vec_to_C[1]+near_y};
+        xy_type vec_C_to_new = {-vec_to_C[0],-vec_to_C[1]};
+        
+        int num_steps = 10;
+        float angle_progressed = 0;
+        float max_angle_allowed = m_delta_q/turning_radius;
+        float dist_travelled = 0;
+        xyt_type first_entry {pos_C[0]+vec_C_to_new[0],pos_C[1]+vec_C_to_new[1],near_theta+angle_progressed};
+        std::vector< xyt_type > path;
+        path.push_back(first_entry);
+        
+        // keep turning until obstacle is hit or delta_q distance has been covered
+        for (int i=1; i < num_steps; i++) {
+            rotateVector(vec_C_to_new, max_angle_allowed/static_cast<float>(num_steps), not leftTurning ^ forward);
+            dist_travelled = abs(angle_progressed*turning_radius);
+            xyt_type new_spot = {pos_C[0]+vec_C_to_new[0],pos_C[1]+vec_C_to_new[1],near_theta+angle_progressed};
+            xy_type new_pos = {pos_C[0]+vec_C_to_new[0],pos_C[1]+vec_C_to_new[1]};
+            if (m_environment.freeOfConstraints(new_pos) and dist_travelled < m_delta_q) {
+                path.push_back(new_spot);
+            } else {
+                // stop if hit an obstacle or have travelled far enough
+                break;
+            }
+            if (not leftTurning ^ forward) {
+                angle_progressed += max_angle_allowed/static_cast<float>(num_steps);
+            } else {
+                angle_progressed -= max_angle_allowed/static_cast<float>(num_steps);
+            }
+        }
+        int len_path = static_cast<int>(path.size());
+        q_new[0] = path[len_path-1][0];
+        q_new[1] = path[len_path-1][1];
+        // ensure that the new angle stays in the range -PI to PI
+        q_new[2] = wrapMinMax(path[len_path-1][2], -M_PI, M_PI);
+        
+        // create new link in the tree
+        addBranch(q_new, nearest_node_id, turning_radius,forward, dist_travelled, path);
+    }
+    
+    void printNodePositions() {
+        int num_nodes = static_cast<int>(m_nodes_list.size());
+        for (int i=0; i< num_nodes;i++) {
+            std::cout << "Node: " << i << " located at (" << m_nodes_list[i].position[0];
+            std::cout << "," << m_nodes_list[i].position[1] << "," << m_nodes_list[i].position[2] << "\n";
+        }
+    }
+    
+    void writeToFile() {
+        //first file holds the tree info
+        std::fstream outfile1("tree.txt", std::fstream::out);
+        int num_nodes = static_cast<int>(m_nodes_list.size());
+        for (int n=0;n<num_nodes;n++) {                         //for each node
+            int num_links = static_cast<int>(m_links_list[n].size());
+            for (int l=0;l<num_links;l++) {                     // for each link starting from the node
+                Link this_link = m_links_list[n][l];
+                outfile1 << this_link.forward << " ";
+                int num_points = static_cast<int>(this_link.path.size());
+                for (int pnt=0;pnt<num_points;pnt++) {          // for each point in path
+                    // in the form "(x,y) (x2,y2) .... (xN,yN)"
+                    outfile1 << "(" << this_link.path[pnt][0] << "," << this_link.path[pnt][1] << ") ";
+                }
+                outfile1 << "\n";                                   // create new line for every path
+            };
+        };
+        outfile1.close();
+        
+        std::fstream outfile2("rand_pos.txt", std::fstream::out);
+        int num_rand_pos = static_cast<int>(m_all_rand_positions.size());
+        for (int i=0;i<num_rand_pos;i++) {
+            outfile2 << "(" << m_all_rand_positions[i][0] << "," << m_all_rand_positions[i][1] << ")" << "\n";
+        }
+        outfile2.close();
+        
+        
+        //        //second file holds the info on the environment
+        //        std::fstream outfile2("environment.txt", std::fstream::out);
+        //        float lower_left[2];
+        //        float * ptr_lower_left = lower_left;
+        //        ptr_lower_left = m_environment.getLowerLeftBound(ptr_lower_left);
+        //        float upper_right[2];
+        //        float * ptr_upper_right = upper_right;
+        //        ptr_upper_right = m_environment.getUpperRightBound(ptr_upper_right);
+        //
+        //        outfile2 << "(" << *ptr_lower_left << "," << *(ptr_lower_left+1) << ") (";
+        //        outfile2 << *ptr_upper_right << "," << *(ptr_upper_right+1) << ")" << "\n";
+        //
+        //        int num_obstacles = static_cast<int>(m_environment.get)
+        //        for (int n=0;n<num_nodes;n++) {
+        //            float from_x = m_nodes_list[n].position[0];
+        //            float from_y = m_nodes_list[n].position[1];
+        //            int num_links = static_cast<int>(m_links_list[n].size());
+        //            for (int l=0;l<num_links;l++) {
+        //                int to_node_id = m_links_list[n][l].node_id_to;
+        //                float to_x = m_nodes_list[to_node_id].position[0];
+        //                float to_y = m_nodes_list[to_node_id].position[1];
+        //                outfile2 << "(" << from_x << "," << from_y << ") (" << to_x << "," << to_y << ")" << "\n";
+        //            };
+        //        };
+        //        outfile2.close();
+        
+    }
+    
+    int buildRRT(int max_num_branches) {
+        std::cout << "Tree is being built" << "\n";
+        for (int k=0;k<max_num_branches;k++) {
+            std::cout << "Round: " << k << "\n";
+            xy_type q_rand;
+            if (k == -1) {
+                q_rand[0] = m_goal_position[0];
+                q_rand[1] = m_goal_position[1];
+            } else {
+                rand_config(q_rand);
+            }
+            int state = extend(q_rand);
+            if (state == 2) {
+                std::cout << "Target Reached!" << "\n";
+                break;
+            }
+        };
+        return 1;
+    }
+    
+    
+private:
+    std::vector<Node> m_nodes_list;
+    std::vector< std::vector <Link> > m_links_list;
+    xyt_type m_start_position;
+    xyt_type m_goal_position;
+    Environment m_environment;
+    float m_delta_q;
+    float m_min_turning_radius;
+    float m_distance_to_goal_tolerance;
+    std::vector<std::vector<float>> m_all_rand_positions;
+};
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//  FUNCTIONS //
+/////////////////////////////////////////////////////////////////////////////////////////////////
+
+double getHeuristicCarDistance(xy_type& target_pos, xyt_type& current_pos) {
+    xy_type current_pos_xy = {current_pos[0],current_pos[1]};
+    double euclidean_distance = getEuclideanDistance(target_pos, current_pos_xy);
+    xy_type vector_to_target {target_pos[0]-current_pos[0],target_pos[1]-current_pos[1]};
+    double angle_to_target = getAngleFromVector(vector_to_target);
+    double current_angle = current_pos[2];
+    double angle_between = abs(current_angle-fmod(angle_to_target,M_PI)); // angle [0,pi)
+    if (angle_between > M_PI_2) {
+        angle_between = M_PI - angle_between;
+    }
+    double adj_factor;
+    if (angle_between < M_PI_4) {
+        adj_factor = 1+angle_between/10.0;
+    } else {
+        adj_factor = 1+pow(angle_between,5.0);
+        
+    }
+    return euclidean_distance*adj_factor;
+}
+
+
+//void debugTurning() {
+//    float start_position[3] = {5.0,5.0,0.0};
+//    Tree tree(start_position);
+//    float q_new[3];
+//    float * ptr_q_new = q_new;
+//    float q_target[3];
+//    float * ptr_q_target = q_target;
+//
+////     test if target is same spot as node
+//    *ptr_q_target = 5.0; *(ptr_q_target+1) = 5.0; *(ptr_q_target+2) = 0.0;
+//    ptr_q_new = tree.addNewConfig(q_target, 0, q_new);
+//    std::cout << "Testing: target same position as node..." << "\n";
+//    std::cout << "   Expected: (5,5,0) \n";
+//    std::cout << "   Found:    (" << *ptr_q_new << "," << *(ptr_q_new+1) << "," << *(ptr_q_target+2) << ")" << "\n";
+//    checkPassComparison(q_target, q_new);
+//
+//    // test if target straight ahead
+//    *ptr_q_target = 5.6; *(ptr_q_target+1) = 5.0; *(ptr_q_target+2) = 0.0;
+//    ptr_q_new = tree.addNewConfig(q_target, 0, q_new);
+//    std::cout << "Testing: target straight ahead..." << "\n";
+//    std::cout << "   Expected: (" << *ptr_q_target << "," << *(ptr_q_target+1) << "," << *(ptr_q_target+2) << ")" << "\n";
+//    std::cout << "   Found:    (" << *ptr_q_new << "," << *(ptr_q_new+1) << "," << *(ptr_q_new+2) << ")" << "\n";
+//    checkPassComparison(q_target, q_new);
+//
+//    // test if target straight behind
+//    *ptr_q_target = 4.5; *(ptr_q_target+1) = 5.0; *(ptr_q_target+2) = 0.0;
+//    ptr_q_new = tree.addNewConfig(q_target, 0, q_new);
+//    std::cout << "Testing: target straight behind..." << "\n";
+//    std::cout << "   Expected: (" << *ptr_q_target << "," << *(ptr_q_target+1) << "," << *(ptr_q_target+2) << ")" << "\n";
+//    std::cout << "   Found:    (" << *ptr_q_new << "," << *(ptr_q_new+1) << "," << *(ptr_q_new+2) << ")" << "\n";
+//    checkPassComparison(q_target, q_new);
+//
+//    // test if forward,left turn can be made within turning radius
+//    *ptr_q_target = 6.0; *(ptr_q_target+1) = 6.0; *(ptr_q_target+2) = M_PI_4;
+//    ptr_q_new = tree.addNewConfig(q_target, 0, q_new);
+//    std::cout << "Testing: forward, left turn within turning radius..." << "\n";
+//    std::cout << "   Expected: (" << *ptr_q_target << "," << *(ptr_q_target+1) << "," << *(ptr_q_target+2) << ")" << "\n";
+//    std::cout << "   Found:    (" << *ptr_q_new << "," << *(ptr_q_new+1) << "," << *(ptr_q_new+2) << ")" << "\n";
+//    checkPassComparison(q_target, q_new);
+//
+//    // test if forward,right turn can be made within turning radius
+//    *ptr_q_target = 4.0; *(ptr_q_target+1) = 4.0; *(ptr_q_target+2) = M_PI_4;
+//    ptr_q_new = tree.addNewConfig(q_target, 0, q_new);
+//    std::cout << "Testing: forward, right turn within turning radius..." << "\n";
+//    std::cout << "   Expected: (" << *ptr_q_target << "," << *(ptr_q_target+1) << "," << *(ptr_q_target+2) << ")" << "\n";
+//    std::cout << "   Found:    (" << *ptr_q_new << "," << *(ptr_q_new+1) << "," << *(ptr_q_new+2) << ")" << "\n";
+//    checkPassComparison(q_target, q_new);
+//}
+//
+//void checkPassComparison(float vec_1[],float vec_2[]) {
+//    // assume that both vectors are same length
+//    bool pass = true;
+//    int length = sizeof(*vec_1)/sizeof(vec_1[0]);
+//
+//    for (int i=0; i < length; i++) {
+//        if (abs(vec_1[i]-vec_2[i]) > 0.0001) {
+//            pass = false;
+//        }
+//    }
+//    if (pass == true) {
+//        std::cout << "test... PASSED" << "\n\n";
+//    } else {
+//        std::cout << "test... FAILED" << "\n\n";
+//    }
+//}
+
+// incorporate reverse to re align
+// convert graph into map
+// try optimizing heuristic parameters
+// do double tree
+// create new class for actor
+
+// only generate random points in line of site of car
+
+*/
